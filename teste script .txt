@@ -1,0 +1,1382 @@
+--// CoiledTom OpenGui - WindUI Edition
+--// Rebuilt interface + original feature set
+--// Combat: Aimbot + Camlock + Next Player
+--// Mobile: external circular Next Player button
+--// PC: L key cycles target
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Camera = workspace.CurrentCamera
+
+local LocalPlayer = Players.LocalPlayer
+
+--==================================================
+-- WINDUI
+--==================================================
+
+local WindUI = loadstring(game:HttpGet(
+    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
+))()
+
+local Window = WindUI:CreateWindow({
+    Title = "CoiledTom",
+    Author = "OpenGui",
+    Icon = "solar:rocket-2-bold",
+    Folder = "CoiledTomOpenGui",
+    NewElements = true,
+
+    Topbar = {
+        Height = 44,
+        ButtonsType = "Mac",
+    },
+
+    OpenButton = {
+        Enabled = true,
+        Draggable = true,
+        OnlyMobile = false,
+        CornerRadius = UDim.new(1, 0),
+        Scale = 0.7,
+    },
+})
+
+Window:Tag({
+    Title = "OpenGui",
+    Icon = "code",
+    Color = Color3.fromRGB(255, 120, 20),
+    Border = true,
+})
+
+--==================================================
+-- STATE
+--==================================================
+
+local State = {
+    ESP = false,
+    Chams = false,
+    Tracers = false,
+
+    Aimbot = false,
+    Camlock = false,
+
+    Flight = false,
+    Freecam = false,
+    Noclip = false,
+
+    Rubberband = false,
+    AntiTP = false,
+
+    NextButton = true,
+
+    ESPColor = Color3.fromRGB(255, 120, 20),
+    ChamsColor = Color3.fromRGB(255, 120, 20),
+
+    ESPDistance = 500,
+    AimDistance = 500,
+
+    AimSmooth = 8,
+    CamSmooth = 8,
+
+    FlightSpeed = 5,
+
+    TargetTeam = false,
+    VisibleOnly = false,
+    OnScreenOnly = false,
+
+    AimPart = "Head",
+}
+
+--==================================================
+-- TARGET SYSTEM
+--==================================================
+
+local CurrentTarget = nil
+local TargetIndex = 0
+
+local function GetCharacter(player)
+    if not player then
+        return nil
+    end
+
+    local character = player.Character
+
+    if not character then
+        return nil
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+
+    if not humanoid or humanoid.Health <= 0 or not root then
+        return nil
+    end
+
+    return character
+end
+
+local function IsEnemy(player)
+    if player == LocalPlayer then
+        return false
+    end
+
+    if not State.TargetTeam then
+        if LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then
+            return false
+        end
+    end
+
+    return GetCharacter(player) ~= nil
+end
+
+local function GetAimPart(player)
+    local character = GetCharacter(player)
+
+    if not character then
+        return nil
+    end
+
+    if State.AimPart == "Torso" then
+        return character:FindFirstChild("UpperTorso")
+            or character:FindFirstChild("Torso")
+            or character:FindFirstChild("HumanoidRootPart")
+    end
+
+    return character:FindFirstChild("Head")
+        or character:FindFirstChild("HumanoidRootPart")
+end
+
+local function IsVisible(player)
+    local part = GetAimPart(player)
+
+    if not part then
+        return false
+    end
+
+    local origin = Camera.CFrame.Position
+    local direction = part.Position - origin
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {
+        LocalPlayer.Character
+    }
+
+    local result = workspace:Raycast(
+        origin,
+        direction,
+        params
+    )
+
+    if not result then
+        return true
+    end
+
+    return result.Instance:IsDescendantOf(player.Character)
+end
+
+local function IsOnScreen(player)
+    local part = GetAimPart(player)
+
+    if not part then
+        return false
+    end
+
+    local position, visible = Camera:WorldToViewportPoint(part.Position)
+
+    return visible and position.Z > 0
+end
+
+local function IsValidTarget(player)
+    if not IsEnemy(player) then
+        return false
+    end
+
+    local part = GetAimPart(player)
+
+    if not part then
+        return false
+    end
+
+    local distance = (Camera.CFrame.Position - part.Position).Magnitude
+
+    if distance > State.AimDistance then
+        return false
+    end
+
+    if State.VisibleOnly and not IsVisible(player) then
+        return false
+    end
+
+    if State.OnScreenOnly and not IsOnScreen(player) then
+        return false
+    end
+
+    return true
+end
+
+local function GetValidPlayers()
+    local result = {}
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if IsValidTarget(player) then
+            table.insert(result, player)
+        end
+    end
+
+    table.sort(result, function(a, b)
+        return a.Name:lower() < b.Name:lower()
+    end)
+
+    return result
+end
+
+local function SetTarget(player)
+    if player and IsValidTarget(player) then
+        CurrentTarget = player
+
+        WindUI:Notify({
+            Title = "Target",
+            Content = player.DisplayName .. "  @" .. player.Name,
+            Duration = 1.5,
+        })
+
+        return true
+    end
+
+    CurrentTarget = nil
+    return false
+end
+
+local function NextTarget()
+    local players = GetValidPlayers()
+
+    if #players == 0 then
+        CurrentTarget = nil
+        TargetIndex = 0
+        return
+    end
+
+    local currentIndex = 0
+
+    if CurrentTarget then
+        for i, player in ipairs(players) do
+            if player == CurrentTarget then
+                currentIndex = i
+                break
+            end
+        end
+    end
+
+    if currentIndex == 0 then
+        TargetIndex = 1
+    else
+        TargetIndex = currentIndex + 1
+
+        if TargetIndex > #players then
+            TargetIndex = 1
+        end
+    end
+
+    SetTarget(players[TargetIndex])
+end
+
+local function GetNearestTarget()
+    local nearest = nil
+    local nearestDistance = math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if IsValidTarget(player) then
+            local part = GetAimPart(player)
+
+            if part then
+                local distance = (
+                    Camera.CFrame.Position - part.Position
+                ).Magnitude
+
+                if distance < nearestDistance then
+                    nearestDistance = distance
+                    nearest = player
+                end
+            end
+        end
+    end
+
+    return nearest
+end
+
+local function ValidateTarget()
+    if CurrentTarget and IsValidTarget(CurrentTarget) then
+        return true
+    end
+
+    CurrentTarget = nil
+    NextTarget()
+
+    return CurrentTarget ~= nil
+end
+
+--==================================================
+-- MOBILE NEXT BUTTON
+--==================================================
+
+local function GetGuiParent()
+    local success, hui = pcall(function()
+        return gethui()
+    end)
+
+    if success and hui then
+        return hui
+    end
+
+    return game:GetService("CoreGui")
+end
+
+local NextGui = Instance.new("ScreenGui")
+NextGui.Name = "CoiledTomNextPlayer"
+NextGui.ResetOnSpawn = false
+NextGui.IgnoreGuiInset = true
+NextGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+
+pcall(function()
+    NextGui.Parent = GetGuiParent()
+end)
+
+if not NextGui.Parent then
+    NextGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local NextButton = Instance.new("TextButton")
+NextButton.Name = "NextPlayer"
+NextButton.Size = UDim2.fromOffset(58, 58)
+NextButton.Position = UDim2.new(1, -80, 0.55, 0)
+NextButton.AnchorPoint = Vector2.new(0, 0)
+NextButton.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+NextButton.BackgroundTransparency = 0.08
+NextButton.Text = ">"
+NextButton.TextColor3 = Color3.fromRGB(255, 120, 20)
+NextButton.TextSize = 28
+NextButton.Font = Enum.Font.GothamBold
+NextButton.AutoButtonColor = false
+NextButton.ZIndex = 100
+
+NextButton.Parent = NextGui
+
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(1, 0)
+Corner.Parent = NextButton
+
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = Color3.fromRGB(255, 120, 20)
+Stroke.Thickness = 1.5
+Stroke.Transparency = 0.15
+Stroke.Parent = NextButton
+
+local function UpdateNextButton()
+    NextButton.Visible =
+        State.NextButton
+        and UserInputService.TouchEnabled
+        and not UserInputService.KeyboardEnabled
+end
+
+NextButton.MouseButton1Click:Connect(function()
+    NextTarget()
+end)
+
+--==================================================
+-- DRAG MOBILE BUTTON
+--==================================================
+
+local dragging = false
+local dragStart
+local startPosition
+
+NextButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+        dragging = true
+        dragStart = input.Position
+        startPosition = NextButton.Position
+    end
+end)
+
+NextButton.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+        dragging = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not dragging then
+        return
+    end
+
+    if input.UserInputType ~= Enum.UserInputType.Touch
+        and input.UserInputType ~= Enum.UserInputType.MouseMovement then
+        return
+    end
+
+    local delta = input.Position - dragStart
+
+    NextButton.Position = UDim2.new(
+        startPosition.X.Scale,
+        startPosition.X.Offset + delta.X,
+        startPosition.Y.Scale,
+        startPosition.Y.Offset + delta.Y
+    )
+end)
+
+UpdateNextButton()
+
+--==================================================
+-- VISUAL
+--==================================================
+
+local VisualSection = Window:Section({
+    Title = "Visual",
+    Opened = true,
+})
+
+local Visual = VisualSection:Tab({
+    Title = "ESP",
+    Icon = "eye",
+})
+
+local ESPObjects = {}
+local TracerObjects = {}
+
+local function RemoveESP(player)
+    local data = ESPObjects[player]
+
+    if data then
+        for _, object in pairs(data) do
+            if object and object.Destroy then
+                pcall(function()
+                    object:Destroy()
+                end)
+            end
+        end
+    end
+
+    ESPObjects[player] = nil
+end
+
+local function CreateESP(player)
+    if player == LocalPlayer then
+        return
+    end
+
+    RemoveESP(player)
+
+    local character = GetCharacter(player)
+
+    if not character then
+        return
+    end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "CoiledTomESP"
+    highlight.Adornee = character
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillColor = State.ESPColor
+    highlight.FillTransparency = 0.72
+    highlight.OutlineColor = State.ESPColor
+    highlight.OutlineTransparency = 0
+    highlight.Parent = NextGui
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "CoiledTomESPInfo"
+    billboard.Adornee = character:FindFirstChild("Head")
+        or character:FindFirstChild("HumanoidRootPart")
+
+    billboard.Size = UDim2.fromOffset(180, 40)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = State.ESPDistance
+    billboard.Parent = NextGui
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = State.ESPColor
+    label.TextStrokeTransparency = 0.25
+    label.TextSize = 13
+    label.Font = Enum.Font.GothamSemibold
+    label.Text = player.DisplayName
+    label.Parent = billboard
+
+    ESPObjects[player] = {
+        Highlight = highlight,
+        Billboard = billboard,
+        Label = label,
+    }
+end
+
+local function RefreshESP()
+    for player in pairs(ESPObjects) do
+        RemoveESP(player)
+    end
+
+    if not State.ESP then
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            if State.TargetTeam or player.Team ~= LocalPlayer.Team then
+                CreateESP(player)
+            end
+        end
+    end
+end
+
+Visual:Toggle({
+    Title = "ESP",
+    Desc = "Highlight players",
+    Callback = function(value)
+        State.ESP = value
+        RefreshESP()
+    end,
+})
+
+Visual:Slider({
+    Title = "ESP Distance",
+    Step = 10,
+    Value = {
+        Min = 50,
+        Max = 2048,
+        Default = 500,
+    },
+    Callback = function(value)
+        State.ESPDistance = value
+
+        for _, data in pairs(ESPObjects) do
+            if data.Billboard then
+                data.Billboard.MaxDistance = value
+            end
+        end
+    end,
+})
+
+Visual:Toggle({
+    Title = "Team ESP",
+    Desc = "Include teammates",
+    Callback = function(value)
+        State.TargetTeam = value
+        RefreshESP()
+    end,
+})
+
+Visual:Toggle({
+    Title = "Tracers",
+    Desc = "Draw lines toward players",
+    Callback = function(value)
+        State.Tracers = value
+    end,
+})
+
+Visual:Toggle({
+    Title = "Chams",
+    Desc = "Players through walls",
+    Callback = function(value)
+        State.Chams = value
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                local existing = player.Character:FindFirstChild("CoiledTomChams")
+
+                if value then
+                    if not existing then
+                        local highlight = Instance.new("Highlight")
+                        highlight.Name = "CoiledTomChams"
+                        highlight.Adornee = player.Character
+                        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        highlight.FillColor = State.ChamsColor
+                        highlight.FillTransparency = 0.45
+                        highlight.OutlineColor = State.ChamsColor
+                        highlight.Parent = player.Character
+                    end
+                elseif existing then
+                    existing:Destroy()
+                end
+            end
+        end
+    end,
+})
+
+--==================================================
+-- COMBAT
+--==================================================
+
+local CombatSection = Window:Section({
+    Title = "Combat",
+    Opened = true,
+})
+
+local Combat = CombatSection:Tab({
+    Title = "Combat",
+    Icon = "crosshair",
+})
+
+local TargetParagraph = Combat:Paragraph({
+    Title = "Target",
+    Desc = "Nenhum jogador selecionado",
+})
+
+local function UpdateTargetText()
+    if CurrentTarget then
+        TargetParagraph:SetDesc(
+            CurrentTarget.DisplayName
+            .. "  @"
+            .. CurrentTarget.Name
+        )
+    else
+        TargetParagraph:SetDesc("Nenhum jogador selecionado")
+    end
+end
+
+Combat:Button({
+    Title = "Next Player",
+    Icon = "chevron-right",
+    Callback = function()
+        NextTarget()
+        UpdateTargetText()
+    end,
+})
+
+Combat:Toggle({
+    Title = "Aimbot",
+    Desc = "Aim toward selected target",
+    Callback = function(value)
+        State.Aimbot = value
+
+        if value and not CurrentTarget then
+            NextTarget()
+            UpdateTargetText()
+        end
+    end,
+})
+
+Combat:Toggle({
+    Title = "Camlock",
+    Desc = "Lock camera to selected target",
+    Callback = function(value)
+        State.Camlock = value
+
+        if value and not CurrentTarget then
+            NextTarget()
+            UpdateTargetText()
+        end
+    end,
+})
+
+Combat:Slider({
+    Title = "Aim Smoothness",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 32,
+        Default = 8,
+    },
+    Callback = function(value)
+        State.AimSmooth = value
+    end,
+})
+
+Combat:Slider({
+    Title = "Camlock Smoothness",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 32,
+        Default = 8,
+    },
+    Callback = function(value)
+        State.CamSmooth = value
+    end,
+})
+
+Combat:Slider({
+    Title = "Max Distance",
+    Step = 10,
+    Value = {
+        Min = 50,
+        Max = 2048,
+        Default = 500,
+    },
+    Callback = function(value)
+        State.AimDistance = value
+    end,
+})
+
+Combat:Dropdown({
+    Title = "Aim Part",
+    Values = {
+        "Head",
+        "Torso",
+    },
+    Value = "Head",
+    Callback = function(value)
+        State.AimPart = value
+    end,
+})
+
+Combat:Toggle({
+    Title = "Target Team",
+    Desc = "Allow teammates",
+    Callback = function(value)
+        State.TargetTeam = value
+    end,
+})
+
+Combat:Toggle({
+    Title = "Visible Only",
+    Desc = "Ignore targets behind walls",
+    Callback = function(value)
+        State.VisibleOnly = value
+    end,
+})
+
+Combat:Toggle({
+    Title = "On Screen Only",
+    Desc = "Only target visible screen players",
+    Callback = function(value)
+        State.OnScreenOnly = value
+    end,
+})
+
+Combat:Toggle({
+    Title = "Mobile Next Button",
+    Desc = "Show external target button",
+    Value = true,
+    Callback = function(value)
+        State.NextButton = value
+        UpdateNextButton()
+    end,
+})
+
+--==================================================
+-- MOVEMENT
+--==================================================
+
+local MovementSection = Window:Section({
+    Title = "Movement",
+    Opened = true,
+})
+
+local Movement = MovementSection:Tab({
+    Title = "Movement",
+    Icon = "move",
+})
+
+local FlightConnection
+
+local function GetRoot()
+    local character = LocalPlayer.Character
+
+    if not character then
+        return nil
+    end
+
+    return character:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetHumanoid()
+    local character = LocalPlayer.Character
+
+    if not character then
+        return nil
+    end
+
+    return character:FindFirstChildOfClass("Humanoid")
+end
+
+local function StopFlight()
+    if FlightConnection then
+        FlightConnection:Disconnect()
+        FlightConnection = nil
+    end
+
+    local humanoid = GetHumanoid()
+
+    if humanoid then
+        humanoid.AutoRotate = true
+    end
+end
+
+local function StartFlight()
+    StopFlight()
+
+    FlightConnection = RunService.RenderStepped:Connect(function(dt)
+        if not State.Flight then
+            return
+        end
+
+        local root = GetRoot()
+        local humanoid = GetHumanoid()
+
+        if not root or not humanoid then
+            return
+        end
+
+        humanoid.AutoRotate = false
+
+        local move = Vector3.zero
+
+        local direction = Camera.CFrame
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            move += direction.LookVector
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            move -= direction.LookVector
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            move -= direction.RightVector
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            move += direction.RightVector
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            move += Vector3.yAxis
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+            or UserInputService:IsKeyDown(Enum.KeyCode.C) then
+            move -= Vector3.yAxis
+        end
+
+        if move.Magnitude > 0 then
+            move = move.Unit
+        end
+
+        local speed = State.FlightSpeed * 10
+
+        root.CFrame = root.CFrame + move * speed * dt
+        root.AssemblyLinearVelocity = Vector3.zero
+    end)
+end
+
+Movement:Toggle({
+    Title = "Flight",
+    Desc = "Fly in camera direction",
+    Callback = function(value)
+        State.Flight = value
+
+        if value then
+            StartFlight()
+        else
+            StopFlight()
+        end
+    end,
+})
+
+Movement:Slider({
+    Title = "Flight Speed",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 100,
+        Default = 5,
+    },
+    Callback = function(value)
+        State.FlightSpeed = value
+    end,
+})
+
+--==================================================
+-- FREECAM
+--==================================================
+
+local FreecamData = {
+    Position = Vector3.zero,
+    RotationX = 0,
+    RotationY = 0,
+    Speed = 2,
+    Connection = nil,
+}
+
+local function StopFreecam()
+    if FreecamData.Connection then
+        FreecamData.Connection:Disconnect()
+        FreecamData.Connection = nil
+    end
+
+    Camera.CameraType = Enum.CameraType.Custom
+end
+
+local function StartFreecam()
+    StopFreecam()
+
+    FreecamData.Position = Camera.CFrame.Position
+
+    local x, y, z = Camera.CFrame:ToOrientation()
+
+    FreecamData.RotationX = y
+    FreecamData.RotationY = x
+
+    Camera.CameraType = Enum.CameraType.Scriptable
+
+    FreecamData.Connection = RunService.RenderStepped:Connect(function(dt)
+        if not State.Freecam then
+            return
+        end
+
+        local move = Vector3.zero
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            move += Vector3.new(0, 0, -1)
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            move += Vector3.new(0, 0, 1)
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            move += Vector3.new(-1, 0, 0)
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            move += Vector3.new(1, 0, 0)
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            move += Vector3.new(0, 1, 0)
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+            move += Vector3.new(0, -1, 0)
+        end
+
+        local rotation =
+            CFrame.Angles(0, FreecamData.RotationX, 0)
+            * CFrame.Angles(FreecamData.RotationY, 0, 0)
+
+        if move.Magnitude > 0 then
+            move = move.Unit
+
+            FreecamData.Position +=
+                rotation:VectorToWorldSpace(move)
+                * FreecamData.Speed
+                * dt
+                * 20
+        end
+
+        Camera.CFrame =
+            CFrame.new(FreecamData.Position)
+            * rotation
+    end)
+end
+
+Movement:Toggle({
+    Title = "Freecam",
+    Desc = "Detach camera from character",
+    Callback = function(value)
+        State.Freecam = value
+
+        if value then
+            StartFreecam()
+        else
+            StopFreecam()
+        end
+    end,
+})
+
+Movement:Slider({
+    Title = "Freecam Speed",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 20,
+        Default = 2,
+    },
+    Callback = function(value)
+        FreecamData.Speed = value
+    end,
+})
+
+--==================================================
+-- NOCLIP
+--==================================================
+
+local NoclipConnection
+
+local function StartNoclip()
+    if NoclipConnection then
+        NoclipConnection:Disconnect()
+    end
+
+    NoclipConnection = RunService.Stepped:Connect(function()
+        if not State.Noclip then
+            return
+        end
+
+        local character = LocalPlayer.Character
+
+        if not character then
+            return
+        end
+
+        for _, object in ipairs(character:GetDescendants()) do
+            if object:IsA("BasePart") then
+                object.CanCollide = false
+            end
+        end
+    end)
+end
+
+local function StopNoclip()
+    if NoclipConnection then
+        NoclipConnection:Disconnect()
+        NoclipConnection = nil
+    end
+
+    local character = LocalPlayer.Character
+
+    if character then
+        for _, object in ipairs(character:GetDescendants()) do
+            if object:IsA("BasePart") then
+                object.CanCollide = true
+            end
+        end
+    end
+end
+
+Movement:Toggle({
+    Title = "No Collision",
+    Desc = "Disable character collisions",
+    Callback = function(value)
+        State.Noclip = value
+
+        if value then
+            StartNoclip()
+        else
+            StopNoclip()
+        end
+    end,
+})
+
+--==================================================
+-- PROTECTION
+--==================================================
+
+local ProtectionSection = Window:Section({
+    Title = "Protection",
+    Opened = true,
+})
+
+local Protection = ProtectionSection:Tab({
+    Title = "Player",
+    Icon = "shield",
+})
+
+local RubberConnection
+local AntiTPConnection
+
+local RubberThreshold = 150
+local AntiTPThreshold = 150
+
+local LastPosition = nil
+local LastVelocity = Vector3.zero
+
+local function StartRubberband()
+    if RubberConnection then
+        RubberConnection:Disconnect()
+    end
+
+    RubberConnection = RunService.Heartbeat:Connect(function()
+        if not State.Rubberband then
+            return
+        end
+
+        local root = GetRoot()
+
+        if not root then
+            return
+        end
+
+        if not LastPosition then
+            LastPosition = root.Position
+            LastVelocity = root.AssemblyLinearVelocity
+            return
+        end
+
+        local velocity = root.AssemblyLinearVelocity
+
+        if velocity.Magnitude > RubberThreshold then
+            root.CFrame = CFrame.new(LastPosition)
+            root.AssemblyLinearVelocity = Vector3.zero
+        else
+            LastPosition = root.Position
+            LastVelocity = velocity
+        end
+    end)
+end
+
+local function StopRubberband()
+    if RubberConnection then
+        RubberConnection:Disconnect()
+        RubberConnection = nil
+    end
+
+    LastPosition = nil
+end
+
+local function StartAntiTP()
+    if AntiTPConnection then
+        AntiTPConnection:Disconnect()
+    end
+
+    local last = nil
+
+    AntiTPConnection = RunService.Heartbeat:Connect(function()
+        if not State.AntiTP then
+            return
+        end
+
+        local root = GetRoot()
+
+        if not root then
+            return
+        end
+
+        if not last then
+            last = root.Position
+            return
+        end
+
+        local distance = (root.Position - last).Magnitude
+
+        if distance > AntiTPThreshold then
+            root.CFrame = CFrame.new(last)
+            root.AssemblyLinearVelocity = Vector3.zero
+        else
+            last = root.Position
+        end
+    end)
+end
+
+local function StopAntiTP()
+    if AntiTPConnection then
+        AntiTPConnection:Disconnect()
+        AntiTPConnection = nil
+    end
+end
+
+Protection:Toggle({
+    Title = "Rubberbanding",
+    Desc = "Restore position after extreme velocity",
+    Callback = function(value)
+        State.Rubberband = value
+
+        if value then
+            StartRubberband()
+        else
+            StopRubberband()
+        end
+    end,
+})
+
+Protection:Slider({
+    Title = "Velocity Threshold",
+    Step = 10,
+    Value = {
+        Min = 50,
+        Max = 1000,
+        Default = 150,
+    },
+    Callback = function(value)
+        RubberThreshold = value
+    end,
+})
+
+Protection:Toggle({
+    Title = "Anti TP",
+    Desc = "Block unusually large position changes",
+    Callback = function(value)
+        State.AntiTP = value
+
+        if value then
+            StartAntiTP()
+        else
+            StopAntiTP()
+        end
+    end,
+})
+
+Protection:Slider({
+    Title = "Teleport Threshold",
+    Step = 10,
+    Value = {
+        Min = 25,
+        Max = 1000,
+        Default = 150,
+    },
+    Callback = function(value)
+        AntiTPThreshold = value
+    end,
+})
+
+--==================================================
+-- INPUT
+--==================================================
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.L then
+        NextTarget()
+        UpdateTargetText()
+    end
+end)
+
+--==================================================
+-- AIMBOT / CAMLOCK LOOP
+--==================================================
+
+RunService.RenderStepped:Connect(function()
+    if not State.Aimbot and not State.Camlock then
+        return
+    end
+
+    if not ValidateTarget() then
+        UpdateTargetText()
+        return
+    end
+
+    local targetPart = GetAimPart(CurrentTarget)
+
+    if not targetPart then
+        return
+    end
+
+    if State.Aimbot then
+        local current = Camera.CFrame
+        local desired = CFrame.lookAt(
+            current.Position,
+            targetPart.Position
+        )
+
+        local alpha = math.clamp(
+            State.AimSmooth / 32,
+            0.02,
+            1
+        )
+
+        Camera.CFrame = current:Lerp(
+            desired,
+            alpha
+        )
+    end
+
+    if State.Camlock then
+        local current = Camera.CFrame
+        local desired = CFrame.lookAt(
+            current.Position,
+            targetPart.Position
+        )
+
+        local alpha = math.clamp(
+            State.CamSmooth / 32,
+            0.02,
+            1
+        )
+
+        Camera.CFrame = current:Lerp(
+            desired,
+            alpha
+        )
+    end
+end)
+
+--==================================================
+-- PLAYER EVENTS
+--==================================================
+
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        task.wait(0.5)
+
+        if State.ESP then
+            RefreshESP()
+        end
+
+        if State.Chams and player ~= LocalPlayer then
+            local character = player.Character
+
+            if character and not character:FindFirstChild("CoiledTomChams") then
+                local highlight = Instance.new("Highlight")
+                highlight.Name = "CoiledTomChams"
+                highlight.Adornee = character
+                highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                highlight.FillColor = State.ChamsColor
+                highlight.FillTransparency = 0.45
+                highlight.OutlineColor = State.ChamsColor
+                highlight.Parent = character
+            end
+        end
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    RemoveESP(player)
+
+    if CurrentTarget == player then
+        CurrentTarget = nil
+        TargetIndex = 0
+        UpdateTargetText()
+    end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+
+    if State.Noclip then
+        StartNoclip()
+    end
+
+    if State.Flight then
+        StartFlight()
+    end
+end)
+
+--==================================================
+-- ESP UPDATE
+--==================================================
+
+task.spawn(function()
+    while task.wait(1) do
+        if State.ESP then
+            RefreshESP()
+        end
+
+        if CurrentTarget and not IsValidTarget(CurrentTarget) then
+            NextTarget()
+            UpdateTargetText()
+        end
+    end
+end)
+
+--==================================================
+-- INITIALIZATION
+--==================================================
+
+UpdateNextButton()
+UpdateTargetText()
+
+WindUI:Notify({
+    Title = "CoiledTom",
+    Content = "WindUI OpenGui carregado.",
+    Duration = 3,
+})
+
+print("[CoiledTom] OpenGui WindUI carregado.")
